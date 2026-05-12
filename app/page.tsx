@@ -1,5 +1,5 @@
 'use client'
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 import GameLayout from '@/components/GameLayout'
 import BalanceBar from '@/components/BalanceBar'
@@ -31,19 +31,6 @@ export default function Home() {
 
   const canvasRef = useRef<PlinkoCanvasHandle>(null)
 
-  // Canvas dimensions: fill screen width up to 390, leave room for UI
-  const [canvasSize, setCanvasSize] = useState({ w: 390, h: 560 })
-  useEffect(() => {
-    function calc() {
-      const w = Math.min(430, window.innerWidth)
-      // header ~72px + controls ~165px + safe ~10px
-      const h = Math.max(300, window.innerHeight - 72 - 165 - 10)
-      setCanvasSize({ w, h })
-    }
-    calc()
-    window.addEventListener('resize', calc)
-    return () => window.removeEventListener('resize', calc)
-  }, [])
 
   const handleStart = useCallback(async () => {
     if (gameState !== 'idle' || balance < bet) return
@@ -90,16 +77,13 @@ export default function Home() {
       </div>
 
       {/* Plinko canvas */}
-      <div className="flex-1 w-full flex items-center justify-center px-1"
+      <div className="flex-1 w-full px-1"
         style={{
           background: 'radial-gradient(ellipse at 50% 40%, rgba(100,30,200,0.1) 0%, transparent 70%)',
+          minHeight: 0,
         }}
       >
-        <PlinkoCanvas
-          ref={canvasRef}
-          width={canvasSize.w}
-          height={canvasSize.h}
-        />
+        <PlinkoCanvas ref={canvasRef} />
       </div>
 
       {/* Bet controls */}

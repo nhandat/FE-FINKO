@@ -6,17 +6,8 @@ export interface PlinkoCanvasHandle {
   drop: (path: Direction[], slot: number, multiplier: number) => Promise<void>
 }
 
-interface Props {
-  width: number
-  height: number
-}
-
-const PlinkoCanvas = forwardRef<PlinkoCanvasHandle, Props>(function PlinkoCanvas(
-  { width, height },
-  ref,
-) {
+const PlinkoCanvas = forwardRef<PlinkoCanvasHandle>(function PlinkoCanvas(_, ref) {
   const containerRef = useRef<HTMLDivElement>(null)
-  // Use any here because PlinkoGame is browser-only and loaded dynamically
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const gameRef = useRef<any>(null)
 
@@ -27,36 +18,40 @@ const PlinkoCanvas = forwardRef<PlinkoCanvasHandle, Props>(function PlinkoCanvas
   }))
 
   useEffect(() => {
-    if (!containerRef.current) return
+    const el = containerRef.current
+    if (!el) return
     let destroyed = false
 
     async function init() {
       const { PlinkoGame } = await import('@/game/PlinkoGame')
       if (destroyed || !containerRef.current) return
-      const game = new PlinkoGame(containerRef.current, width, height)
+      const { offsetWidth: w, offsetHeight: h } = containerRef.current
+      const game = new PlinkoGame(containerRef.current, w || 390, h || 560)
       gameRef.current = game
     }
 
     init()
 
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry || !gameRef.current) return
+      const { inlineSize: w, blockSize: h } = entry.contentBoxSize[0]
+      gameRef.current.resize(Math.round(w), Math.round(h))
+    })
+    ro.observe(el)
+
     return () => {
       destroyed = true
+      ro.disconnect()
       gameRef.current?.destroy()
       gameRef.current = null
     }
-  // Intentionally run once on mount
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // Resize when dimensions change
-  useEffect(() => {
-    gameRef.current?.resize(width, height)
-  }, [width, height])
 
   return (
     <div
       ref={containerRef}
-      style={{ width, height, position: 'relative' }}
+      style={{ width: '100%', height: '100%', position: 'relative' }}
       className="overflow-hidden rounded-xl"
     />
   )
