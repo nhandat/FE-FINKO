@@ -21,10 +21,10 @@ export const useStore = create<AppState>((set) => ({
   user: (() => {
     try {
       const stored = localStorage.getItem('user')
-      return stored ? JSON.parse(stored) : null
-    } catch {
-      return null
-    }
+      if (stored) return JSON.parse(stored)
+    } catch { /* ignore */ }
+    // Default guest so users land directly on the game
+    return { id: 'guest', username: 'Guest', phone: '', balance: 10000, token: '' }
   })(),
   risk: 'high',
   betAmount: 10,
