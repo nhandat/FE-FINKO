@@ -1,80 +1,90 @@
 'use client'
 import { useEffect, useRef } from 'react'
 import gsap from 'gsap'
+import type { WinRecord } from '@/types/plinko'
 
 interface Props {
   balance: number
-  lastWin?: number | null
+  lastWin: WinRecord | null
 }
 
 export default function BalanceBar({ balance, lastWin }: Props) {
   const numRef  = useRef<HTMLSpanElement>(null)
   const prevRef = useRef(balance)
-  const winRef  = useRef<HTMLDivElement>(null)
+  const badgeRef = useRef<HTMLDivElement>(null)
 
-  // Animate balance count-up / count-down
   useEffect(() => {
     const el = numRef.current
     if (!el) return
     const from = prevRef.current
-    const to   = balance
     prevRef.current = balance
-    if (from === to) return
-
-    const obj = { val: from }
+    if (from === balance) return
+    const obj = { v: from }
     gsap.to(obj, {
-      val: to,
-      duration: 0.6,
-      ease: 'power2.out',
-      onUpdate: () => { el.textContent = Math.round(obj.val).toLocaleString() },
+      v: balance, duration: 0.55, ease: 'power2.out',
+      onUpdate: () => { el.textContent = Math.round(obj.v).toLocaleString() },
     })
   }, [balance])
 
-  // Flash last win badge
   useEffect(() => {
-    const el = winRef.current
+    const el = badgeRef.current
     if (!el || !lastWin) return
-    gsap.fromTo(el, { opacity: 0, y: -8 }, { opacity: 1, y: 0, duration: 0.3 })
-    gsap.to(el, { opacity: 0, duration: 0.4, delay: 1.6 })
+    gsap.killTweensOf(el)
+    gsap.fromTo(el, { opacity: 0, y: -6 }, { opacity: 1, y: 0, duration: 0.25 })
+    gsap.to(el, { opacity: 0, duration: 0.35, delay: 1.8 })
   }, [lastWin])
 
+  const profit = lastWin ? lastWin.profit : 0
+
   return (
-    <div className="flex items-center justify-between px-4 py-3 relative z-10"
-      style={{ background: 'linear-gradient(180deg,#13082E 0%,#0C0520 100%)' }}>
-      {/* Avatar */}
-      <div className="w-9 h-9 rounded-full border-2 border-neon-purple/60 flex items-center justify-center text-lg select-none"
-        style={{ background: '#1E0B40' }}>
-        🎰
+    <div
+      className="flex items-center justify-between px-4 py-2.5 shrink-0"
+      style={{ background: 'linear-gradient(180deg,#160930 0%,#0c0520 100%)' }}
+    >
+      <div className="flex items-center gap-2">
+        <div
+          className="w-8 h-8 rounded-full flex items-center justify-center text-base border border-purple-800"
+          style={{ background: '#1e0b40' }}
+        >
+          🎰
+        </div>
+        <span className="text-purple-400 text-xs font-semibold">FINKO</span>
       </div>
 
-      {/* Balance */}
       <div className="flex flex-col items-center">
         <div className="flex items-center gap-1.5">
-          <span className="text-neon-yellow text-lg">🪙</span>
+          <span className="text-yellow-400 text-base">🪙</span>
           <span
             ref={numRef}
-            className="text-white font-bold text-xl tabular-nums"
-            style={{ textShadow: '0 0 12px rgba(255,215,0,0.6)' }}
+            className="text-white font-black text-lg tabular-nums"
+            style={{ textShadow: '0 0 10px rgba(255,215,0,0.5)' }}
           >
             {balance.toLocaleString()}
           </span>
         </div>
-
-        {/* Last win badge */}
-        <div ref={winRef} style={{ opacity: 0 }}
-          className="text-neon-yellow text-xs font-bold mt-0.5">
-          {lastWin && lastWin > 0 ? `+${lastWin.toLocaleString()}` : ''}
+        <div ref={badgeRef} style={{ opacity: 0, minHeight: 16 }}>
+          {lastWin && (
+            <span
+              className="text-xs font-bold tabular-nums"
+              style={{ color: profit >= 0 ? '#4ade80' : '#f87171' }}
+            >
+              {profit >= 0 ? '+' : ''}{profit.toLocaleString()} coins
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Settings / sound */}
-      <div className="flex gap-2">
-        <button className="w-9 h-9 rounded-full flex items-center justify-center text-lg"
-          style={{ background: '#1E0B40', border: '1px solid #3D1F70' }}>
+      <div className="flex gap-1.5">
+        <button
+          className="w-8 h-8 rounded-full flex items-center justify-center text-sm border border-purple-800"
+          style={{ background: '#1e0b40' }}
+        >
           🔊
         </button>
-        <button className="w-9 h-9 rounded-full flex items-center justify-center text-lg"
-          style={{ background: '#1E0B40', border: '1px solid #3D1F70' }}>
+        <button
+          className="w-8 h-8 rounded-full flex items-center justify-center text-sm border border-purple-800"
+          style={{ background: '#1e0b40' }}
+        >
           ⚙️
         </button>
       </div>

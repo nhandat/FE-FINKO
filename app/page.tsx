@@ -1,109 +1,119 @@
 'use client'
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import dynamic from 'next/dynamic'
-import GameLayout from '@/components/GameLayout'
 import BalanceBar from '@/components/BalanceBar'
-import BetControls from '@/components/BetControls'
-import WinOverlay from '@/components/WinOverlay'
-import { playPlinko } from '@/lib/mockPlinkoApi'
-import { DEFAULT_BALANCE, SUPER_WIN_THRESHOLD } from '@/types/plinko'
-import type { GameState } from '@/types/plinko'
+import BinsRow from '@/components/BinsRow'
+import LastWins from '@/components/LastWins'
+import Controls from '@/components/Controls'
+import type { RowCount, RiskLevel, WinRecord } from '@/types/plinko'
+import { DEFAULT_BALANCE, LOCAL_STORAGE_KEY } from '@/types/plinko'
 import type { PlinkoCanvasHandle } from '@/components/PlinkoCanvas'
 
-// Dynamic import avoids SSR issues with PixiJS
 const PlinkoCanvas = dynamic(() => import('@/components/PlinkoCanvas'), {
   ssr: false,
   loading: () => (
-    <div className="flex items-center justify-center text-purple-400 text-sm"
-      style={{ width: 390, height: 560 }}>
-      Loading game…
+    <div className="w-full aspect-[760/570] bg-[#080318] rounded-xl flex items-center justify-center text-purple-600 text-sm">
+      Loading…
     </div>
   ),
 })
 
+let nextId = 1
+
 export default function Home() {
-  const [balance, setBalance]   = useState(DEFAULT_BALANCE)
-  const [bet, setBet]           = useState(10)
-  const [gameState, setGameState] = useState<GameState>('idle')
-  const [lastWin, setLastWin]   = useState<number | null>(null)
-  const [multiplier, setMultiplier] = useState(1)
-  const [winAmount, setWinAmount]   = useState(0)
+  const [balance, setBalance]       = useState(DEFAULT_BALANCE)
+  const [rowCount, setRowCount]     = useState<RowCount>(8)
+  const [riskLevel, setRiskLevel]   = useState<RiskLevel>('low')
+  const [winRecords, setWinRecords] = useState<WinRecord[]>([])
+  const [lastWin, setLastWin]       = useState<WinRecord | null>(null)
 
   const canvasRef = useRef<PlinkoCanvasHandle>(null)
 
+  // Persist balance in localStorage
+  useEffect(() => {
+    const stored = localStorage.getItem(LOCAL_STORAGE_KEY)
+    if (stored) setBalance(Math.max(1, Number(stored)))
+  }, [])
 
-  const handleStart = useCallback(async () => {
-    if (gameState !== 'idle' || balance < bet) return
+  useEffect(() => {
+    localStorage.setItem(LOCAL_STORAGE_KEY, String(balance))
+  }, [balance])
 
-    setGameState('playing')
-    setLastWin(null)
+  const handleWin = useCallback((record: Omit<WinRecord, 'id'>) => {
+    const full: WinRecord = { ...record, id: nextId++ }
+    setBalance((b) => b + record.betAmount * record.multiplier)
+    setLastWin(full)
+    setWinRecords((prev) => [...prev.slice(-99), full])
+  }, [])
 
-    // Deduct bet immediately
+  const handleDrop = useCallback((bet: number) => {
+    if (balance < bet) return
     setBalance((b) => b - bet)
+    canvasRef.current?.dropBall(bet)
+  }, [balance])
 
-    try {
-      const result = await playPlinko(bet)
+  const handleRowCount = useCallback((rc: RowCount) => {
+    setRowCount(rc)
+    canvasRef.current?.setRowCount(rc)
+  }, [])
 
-      // Animate the drop (blocks until complete)
-      await canvasRef.current?.drop(result.path, result.resultSlot, result.multiplier)
-
-      // Apply winnings
-      const win = result.winAmount
-      setBalance((b) => b + win)
-      setLastWin(win - bet)           // net gain/loss for display
-      setMultiplier(result.multiplier)
-      setWinAmount(win)
-
-      const nextState: GameState = result.multiplier >= SUPER_WIN_THRESHOLD
-        ? 'superwin'
-        : win > 0 ? 'win' : 'idle'
-      setGameState(nextState)
-
-      // Auto-clear non-super wins after WinOverlay times out
-      if (nextState === 'win') {
-        setTimeout(() => setGameState('idle'), 2400)
-      }
-    } catch (e) {
-      console.error(e)
-      setGameState('idle')
-    }
-  }, [gameState, balance, bet])
+  const handleRisk = useCallback((rl: RiskLevel) => {
+    setRiskLevel(rl)
+    canvasRef.current?.setRiskLevel(rl)
+  }, [])
 
   return (
-    <GameLayout>
+    <div
+      className="flex flex-col h-dvh overflow-hidden max-w-[430px] mx-auto"
+      style={{ background: '#080318' }}
+    >
       {/* Header */}
-      <div className="w-full">
-        <BalanceBar balance={balance} lastWin={lastWin} />
+      <BalanceBar balance={balance} lastWin={lastWin} />
+
+      {/* Game area: canvas + last-wins sidebar */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Centre column */}
+        <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+          {/* Canvas (aspect-ratio keeps it proportional) */}
+          <div className="flex-1 min-h-0 flex items-end">
+            <PlinkoCanvas
+              ref={canvasRef}
+              rowCount={rowCount}
+              riskLevel={riskLevel}
+              onWin={handleWin}
+            />
+          </div>
+          {/* Bins row aligned under the canvas */}
+          <BinsRow
+            rowCount={rowCount}
+            riskLevel={riskLevel}
+            lastWin={lastWin}
+          />
+        </div>
+
+        {/* Last-wins sidebar */}
+        <div
+          className="w-10 shrink-0 flex flex-col pt-2 px-1"
+          style={{ background: '#060215' }}
+        >
+          <LastWins records={winRecords} maxCount={10} />
+        </div>
       </div>
 
-      {/* Plinko canvas */}
-      <div className="flex-1 w-full px-1"
-        style={{
-          background: 'radial-gradient(ellipse at 50% 40%, rgba(100,30,200,0.1) 0%, transparent 70%)',
-          minHeight: 0,
-        }}
+      {/* Bottom controls */}
+      <div
+        className="shrink-0 border-t border-purple-950"
+        style={{ background: '#0d0525' }}
       >
-        <PlinkoCanvas ref={canvasRef} />
-      </div>
-
-      {/* Bet controls */}
-      <div className="w-full">
-        <BetControls
-          bet={bet}
-          onBetChange={setBet}
-          onStart={handleStart}
-          disabled={gameState === 'playing'}
+        <Controls
           balance={balance}
+          onDrop={handleDrop}
+          rowCount={rowCount}
+          riskLevel={riskLevel}
+          onRowCount={handleRowCount}
+          onRisk={handleRisk}
         />
       </div>
-
-      {/* Win overlay */}
-      <WinOverlay
-        state={gameState}
-        multiplier={multiplier}
-        winAmount={winAmount}
-        onClose={() => setGameState('idle')}
-      />
-    </GameLayout>
+    </div>
   )
 }

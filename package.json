@@ -9,13 +9,13 @@
   },
   "dependencies": {
     "gsap": "^3.12.5",
+    "matter-js": "^0.19.0",
     "next": "^16.2.6",
-    "pixi-filters": "^5.3.0",
-    "pixi.js": "^7.4.2",
     "react": "^18",
     "react-dom": "^18"
   },
   "devDependencies": {
+    "@types/matter-js": "^0.19.6",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",

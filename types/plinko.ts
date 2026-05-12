@@ -1,26 +1,19 @@
-export type Direction = 'L' | 'R'
+export type RiskLevel = 'low' | 'medium' | 'high'
+export type RowCount = 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16
+export type GameState = 'idle' | 'playing'
 
-export type GameState = 'idle' | 'playing' | 'win' | 'superwin'
-
-export interface PlayResult {
-  path: Direction[]
-  resultSlot: number
+export interface WinRecord {
+  id: number
+  binIndex: number
   multiplier: number
-  winAmount: number
+  betAmount: number
+  profit: number
+  rowCount: RowCount
+  riskLevel: RiskLevel
 }
 
-export interface GameConfig {
-  rows: number
-  multipliers: number[]
-}
-
-export const GAME_CONFIGS: Record<number, GameConfig> = {
-  8: {
-    rows: 8,
-    multipliers: [10, 3, 1.5, 1, 0.5, 1, 1.5, 3, 10],
-  },
-}
-
-export const DEFAULT_BALANCE = 10_000
-export const BET_OPTIONS = [10, 50, 100, 500]
-export const SUPER_WIN_THRESHOLD = 5 // multiplier >= 5x triggers super win
+export const ROW_COUNT_OPTIONS: RowCount[] = [8, 9, 10, 11, 12, 13, 14, 15, 16]
+export const RISK_LEVELS: RiskLevel[] = ['low', 'medium', 'high']
+export const BET_OPTIONS = [1, 5, 10, 50, 100, 500]
+export const DEFAULT_BALANCE = 1000
+export const LOCAL_STORAGE_KEY = 'plinko_balance'

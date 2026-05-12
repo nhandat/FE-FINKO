@@ -1,58 +1,90 @@
 'use client'
 import { useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
-import type { Direction } from '@/types/plinko'
+import type { RowCount, RiskLevel, WinRecord } from '@/types/plinko'
+import type { PlinkoEngine } from '@/game/PlinkoEngine'
 
 export interface PlinkoCanvasHandle {
-  drop: (path: Direction[], slot: number, multiplier: number) => Promise<void>
+  dropBall: (bet: number) => void
+  setRowCount: (rc: RowCount) => void
+  setRiskLevel: (rl: RiskLevel) => void
+  getBinsWidthFraction: () => number
 }
 
-const PlinkoCanvas = forwardRef<PlinkoCanvasHandle>(function PlinkoCanvas(_, ref) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const gameRef = useRef<any>(null)
+interface Props {
+  rowCount:  RowCount
+  riskLevel: RiskLevel
+  onWin:     (record: Omit<WinRecord, 'id'>) => void
+}
+
+const PlinkoCanvas = forwardRef<PlinkoCanvasHandle, Props>(function PlinkoCanvas(
+  { rowCount, riskLevel, onWin },
+  ref,
+) {
+  const canvasRef  = useRef<HTMLCanvasElement>(null)
+  const engineRef  = useRef<PlinkoEngine | null>(null)
+  // Keep latest callbacks in refs so engine closure stays up-to-date
+  const onWinRef     = useRef(onWin)
+  const rowCountRef  = useRef(rowCount)
+  const riskLevelRef = useRef(riskLevel)
+
+  useEffect(() => { onWinRef.current = onWin }, [onWin])
 
   useImperativeHandle(ref, () => ({
-    async drop(path: Direction[], slot: number, multiplier: number) {
-      await gameRef.current?.drop(path, slot, multiplier)
-    },
+    dropBall:           (bet)  => engineRef.current?.dropBall(bet),
+    setRowCount:        (rc)   => engineRef.current?.setRowCount(rc),
+    setRiskLevel:       (rl)   => engineRef.current?.setRiskLevel(rl),
+    getBinsWidthFraction: ()   => engineRef.current?.binsWidthFraction ?? ((760 - 104) / 760),
   }))
 
+  // Sync rowCount / riskLevel changes into a running engine
   useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
+    if (rowCountRef.current !== rowCount) {
+      rowCountRef.current = rowCount
+      engineRef.current?.setRowCount(rowCount)
+    }
+  }, [rowCount])
+
+  useEffect(() => {
+    if (riskLevelRef.current !== riskLevel) {
+      riskLevelRef.current = riskLevel
+      engineRef.current?.setRiskLevel(riskLevel)
+    }
+  }, [riskLevel])
+
+  // Mount engine once
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
     let destroyed = false
 
     async function init() {
-      const { PlinkoGame } = await import('@/game/PlinkoGame')
-      if (destroyed || !containerRef.current) return
-      const { offsetWidth: w, offsetHeight: h } = containerRef.current
-      const game = new PlinkoGame(containerRef.current, w || 390, h || 560)
-      gameRef.current = game
+      const { PlinkoEngine } = await import('@/game/PlinkoEngine')
+      if (destroyed || !canvasRef.current) return
+      engineRef.current = new PlinkoEngine(
+        canvasRef.current,
+        rowCountRef.current,
+        riskLevelRef.current,
+        (record) => onWinRef.current(record),
+      )
     }
 
     init()
 
-    const ro = new ResizeObserver((entries) => {
-      const entry = entries[0]
-      if (!entry || !gameRef.current) return
-      const { inlineSize: w, blockSize: h } = entry.contentBoxSize[0]
-      gameRef.current.resize(Math.round(w), Math.round(h))
-    })
-    ro.observe(el)
-
     return () => {
       destroyed = true
-      ro.disconnect()
-      gameRef.current?.destroy()
-      gameRef.current = null
+      engineRef.current?.stop()
+      engineRef.current = null
     }
   }, [])
 
   return (
-    <div
-      ref={containerRef}
-      style={{ width: '100%', height: '100%', position: 'relative' }}
-      className="overflow-hidden rounded-xl"
+    // Canvas renders at 760×570 internally; CSS width:100% scales it
+    <canvas
+      ref={canvasRef}
+      width={760}
+      height={570}
+      style={{ width: '100%', height: 'auto', display: 'block' }}
+      className="rounded-xl"
     />
   )
 })

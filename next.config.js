@@ -1,5 +1,3 @@
 /** @type {import('next').NextConfig} */
-const nextConfig = {
-  transpilePackages: ['pixi.js'],
-}
+const nextConfig = {}
 module.exports = nextConfig
