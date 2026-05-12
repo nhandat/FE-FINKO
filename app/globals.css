@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #08040F;
+  color: #fff;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Neon text helpers */
+.neon-pink  { color: #FF2D78; text-shadow: 0 0 12px #FF2D78, 0 0 24px #FF2D7866; }
+.neon-gold  { color: #FFD700; text-shadow: 0 0 12px #FFD700, 0 0 24px #FFD70066; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 0; }
+
+/* Canvas pixel-perfect */
+canvas { display: block; }
+
+/* Button press */
+button:active:not(:disabled) { transform: scale(0.96); }
