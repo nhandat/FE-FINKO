@@ -6,77 +6,89 @@ interface Props {
   rows: number
   risk: RiskLevel
   activeBucket: number | null
+  /** If provided, bias the ball toward this bucket index */
+  targetBucket: number | null
   ballPath: boolean[] | null
-  onAnimationEnd: () => void
+  onAnimationEnd: (bucketIndex: number) => void
 }
 
-const PEG_RADIUS = 6
-const BALL_RADIUS = 8
-// Each row the ball falls faster (gravity)
-const SEG_DURATIONS = [290, 250, 215, 185, 162, 144, 130, 118, 109, 102, 96, 91, 87, 84, 82, 80]
-const BOUNCE_DUR = 340 // ms — how long a peg bounce animation lasts
+// ── Physics constants ──────────────────────────────────────────────
+const GRAVITY   = 0.30   // px / frame²
+const RESTITUTION = 0.42  // bounciness off pegs
+const FRICTION_AIR = 0.003
+const SUBSTEPS  = 4      // collision resolution passes per frame
+const PEG_R     = 5
+const BALL_R    = 8
+const BOUNCE_DUR = 380   // ms peg glow duration
 
-interface WPt { x: number; y: number; cp: { x: number; y: number } }
+interface Vec2 { x: number; y: number }
+interface PegBody { x: number; y: number; row: number; col: number }
 
-export default function PlinkoBoard({ rows, risk, activeBucket, ballPath, onAnimationEnd }: Props) {
+export default function PlinkoBoard({
+  rows, risk, activeBucket, targetBucket, ballPath, onAnimationEnd,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const rafRef = useRef<number>(0)
+  const rafRef    = useRef<number>(0)
 
-  // Ball + bucket state
-  const ballRef = useRef({ x: -999, y: -999 })
-  const activeBucketRef = useRef<number | null>(null)
-  const isAnimatingRef = useRef(false)
+  // mutable physics state – not React state to avoid re-renders
+  const ballPos    = useRef<Vec2>({ x: -999, y: -999 })
+  const ballVel    = useRef<Vec2>({ x: 0, y: 0 })
+  const pegsRef    = useRef<PegBody[]>([])
+  const pegHits    = useRef<Map<string, number>>(new Map())
+  const activeRef  = useRef<number | null>(null)
+  const runningRef = useRef(false)
 
-  // Per-peg bounce: key = "row,col", value = timestamp of hit
-  const pegHitsRef = useRef<Map<string, number>>(new Map())
-
-  /* ── layout ───────────────────────────────────────────────────── */
+  /* ── layout ──────────────────────────────────────────────────── */
   const layout = useCallback(() => {
     const c = canvasRef.current
     if (!c) return null
     const W = c.width, H = c.height
-    const ps = (W - 32) / (rows + 1)   // peg spacing
-    const cx = W / 2
-    const topY = 55
+    const ps  = (W - 32) / (rows + 1)
+    const cx  = W / 2
+    const topY = 52
     const rowH = (H - topY - 75) / rows
     return { W, H, ps, cx, topY, rowH }
   }, [rows])
 
-  const pegXY = useCallback((row: number, col: number) => {
-    const l = layout()!
-    return { x: l.cx + (col - row / 2) * l.ps, y: l.topY + row * l.rowH }
-  }, [layout])
+  /* ── build static peg bodies ─────────────────────────────────── */
+  const buildPegs = useCallback((): PegBody[] => {
+    const l = layout()
+    if (!l) return []
+    const out: PegBody[] = []
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c <= r; c++)
+        out.push({ x: l.cx + (c - r / 2) * l.ps, y: l.topY + r * l.rowH, row: r, col: c })
+    return out
+  }, [layout, rows])
 
   const bucketX = useCallback((idx: number) => {
     const l = layout()!
     return l.cx + (idx - rows / 2) * l.ps
   }, [layout, rows])
 
-  /* ── waypoints with bezier control points ─────────────────────── */
-  const buildWaypoints = useCallback((path: boolean[]): WPt[] => {
+  /* ── launch ball ─────────────────────────────────────────────── */
+  const launchBall = useCallback(() => {
     const l = layout()
-    if (!l) return []
-    const pts: WPt[] = []
-    pts.push({ x: l.cx, y: l.topY - l.rowH * 0.85, cp: { x: l.cx, y: l.topY - l.rowH * 0.85 } })
+    if (!l) return
+    const pegs = buildPegs()
+    pegsRef.current = pegs
+    pegHits.current.clear()
+    activeRef.current = null
+    runningRef.current = true
 
-    let col = 0
-    for (let r = 0; r < rows; r++) {
-      const p = pegXY(r, col)
-      const right = path[r]
-      // CP: shoot sideways past the peg shoulder before dropping to next
-      const cpX = p.x + (right ? l.ps * 0.7 : -l.ps * 0.7)
-      const cpY = p.y + l.rowH * 0.18
-      pts.push({ x: p.x, y: p.y, cp: { x: cpX, y: cpY } })
-      if (right) col++
+    // Horizontal bias toward target bucket
+    const bias = targetBucket !== null
+      ? (targetBucket - rows / 2) * l.ps * 0.13
+      : (Math.random() - 0.5) * l.ps * 0.6
+
+    ballPos.current = { x: l.cx + bias * 0.4, y: l.topY - l.rowH }
+    ballVel.current = {
+      x: bias * 0.018 + (Math.random() - 0.5) * 0.4,
+      y: 1.2,
     }
+  }, [layout, buildPegs, targetBucket, rows])
 
-    const bx = bucketX(col)
-    const last = pts[pts.length - 1]
-    pts.push({ x: bx, y: l.H - 52, cp: { x: (last.x + bx) / 2, y: last.y + l.rowH * 0.35 } })
-    return pts
-  }, [layout, pegXY, bucketX, rows])
-
-  /* ── draw one frame ───────────────────────────────────────────── */
+  /* ── draw ────────────────────────────────────────────────────── */
   const draw = useCallback((now: number) => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -84,208 +96,214 @@ export default function PlinkoBoard({ rows, risk, activeBucket, ballPath, onAnim
     const l = layout()
     if (!l) return
     const { W, H, ps } = l
-    const mults = MULTIPLIERS[risk][rows] ?? []
+    const mults   = MULTIPLIERS[risk][rows] ?? []
     const buckets = rows + 1
-    const ball = ballRef.current
+    const bp      = ballPos.current
 
     ctx.clearRect(0, 0, W, H)
 
-    // ── Background ──
+    // Background
     const bg = ctx.createLinearGradient(0, 0, 0, H)
     bg.addColorStop(0, '#11062b')
     bg.addColorStop(1, '#07020f')
     ctx.fillStyle = bg
     ctx.fillRect(0, 0, W, H)
-
     // Ambient glow
-    const ag = ctx.createRadialGradient(W / 2, H * 0.42, 0, W / 2, H * 0.42, W * 0.65)
-    ag.addColorStop(0, 'rgba(110,35,195,0.1)')
+    const ag = ctx.createRadialGradient(W/2, H*0.4, 0, W/2, H*0.4, W*0.65)
+    ag.addColorStop(0, 'rgba(110,35,195,0.09)')
     ag.addColorStop(1, 'rgba(0,0,0,0)')
     ctx.fillStyle = ag
     ctx.fillRect(0, 0, W, H)
 
-    // ── Pegs as 3-D spheres ──
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c <= r; c++) {
-        const p = pegXY(r, c)
-        const hitTs = pegHitsRef.current.get(`${r},${c}`) ?? 0
-        const elapsed = now - hitTs
-        const t = hitTs > 0 ? Math.min(1, elapsed / BOUNCE_DUR) : 1
+    // ── Pegs ──────────────────────────────────────────────────────
+    for (const p of pegsRef.current) {
+      const key   = `${p.row},${p.col}`
+      const hitTs = pegHits.current.get(key) ?? 0
+      const t     = hitTs > 0 ? Math.min(1, (now - hitTs) / BOUNCE_DUR) : 1
+      const scale = t < 1 ? 1 + Math.sin(t * Math.PI) * 0.7 : 1
+      const glowA = t < 1 ? Math.sin(t * Math.PI) : 0
+      const r3    = PEG_R * scale
 
-        // Spring: expand then spring back (single hump)
-        const scale = t < 1 ? 1 + Math.sin(t * Math.PI) * 0.65 : 1
-        const glowA = t < 1 ? Math.sin(t * Math.PI) : 0
-        const r3 = PEG_RADIUS * scale
-
-        ctx.save()
-        ctx.beginPath()
-        ctx.arc(p.x, p.y, r3, 0, Math.PI * 2)
-
-        // 3-D radial gradient (top-left highlight)
-        const gr = ctx.createRadialGradient(
-          p.x - r3 * 0.32, p.y - r3 * 0.38, r3 * 0.06,
-          p.x, p.y, r3,
-        )
-        if (glowA > 0.05) {
-          gr.addColorStop(0, '#fffde0')
-          gr.addColorStop(0.3, `rgba(255,210,60,${0.9})`)
-          gr.addColorStop(0.7, `rgba(200,100,10,${0.75})`)
-          gr.addColorStop(1, `rgba(80,20,0,0.6)`)
-          ctx.shadowColor = `rgba(255,180,20,${glowA * 0.9})`
-          ctx.shadowBlur = 22 * glowA
-        } else {
-          gr.addColorStop(0, '#ffffff')
-          gr.addColorStop(0.28, 'rgba(220,195,255,0.95)')
-          gr.addColorStop(0.65, 'rgba(130,80,205,0.75)')
-          gr.addColorStop(1, 'rgba(45,12,85,0.55)')
-          ctx.shadowColor = 'rgba(180,140,255,0.3)'
-          ctx.shadowBlur = 5
-        }
-        ctx.fillStyle = gr
-        ctx.fill()
-        ctx.restore()
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, r3, 0, Math.PI * 2)
+      const gr = ctx.createRadialGradient(p.x - r3*0.3, p.y - r3*0.38, r3*0.05, p.x, p.y, r3)
+      if (glowA > 0.04) {
+        gr.addColorStop(0, '#fffde0')
+        gr.addColorStop(0.35, `rgba(255,205,50,0.9)`)
+        gr.addColorStop(0.7,  `rgba(190,90,5,0.75)`)
+        gr.addColorStop(1,    `rgba(70,18,0,0.55)`)
+        ctx.shadowColor = `rgba(255,175,15,${glowA * 0.9})`
+        ctx.shadowBlur  = 22 * glowA
+      } else {
+        gr.addColorStop(0,   '#ffffff')
+        gr.addColorStop(0.28,'rgba(220,195,255,0.95)')
+        gr.addColorStop(0.65,'rgba(130,80,200,0.75)')
+        gr.addColorStop(1,   'rgba(42,10,82,0.5)')
+        ctx.shadowColor = 'rgba(175,135,255,0.3)'
+        ctx.shadowBlur  = 5
       }
+      ctx.fillStyle = gr
+      ctx.fill()
+      ctx.restore()
     }
 
-    // ── Buckets ──
+    // ── Buckets ──────────────────────────────────────────────────
     const bw = ps - 4, bh = 28, by = H - bh - 8
     for (let i = 0; i < buckets; i++) {
-      const bx = bucketX(i) - bw / 2
-      const mult = mults[i] ?? 0
+      const bx   = bucketX(i) - bw / 2
+      const mult  = mults[i] ?? 0
       const color = getMultiplierColor(mult)
-      const isActive = activeBucketRef.current === i
+      const isAct = activeRef.current === i
 
       ctx.save()
       ctx.beginPath()
       rrect(ctx, bx, by, bw, bh, 5)
-      if (isActive) {
-        ctx.shadowColor = color; ctx.shadowBlur = 24
-        ctx.fillStyle = '#ffffff'
-      } else {
-        ctx.fillStyle = color + 'bb'; ctx.shadowBlur = 0
-      }
+      if (isAct) { ctx.shadowColor = color; ctx.shadowBlur = 24; ctx.fillStyle = '#fff' }
+      else { ctx.fillStyle = color + 'bb'; ctx.shadowBlur = 0 }
       ctx.fill()
       ctx.restore()
-
-      ctx.fillStyle = isActive ? color : '#fff'
+      ctx.fillStyle = isAct ? color : '#fff'
       ctx.font = `bold ${mult >= 100 ? 7 : 9}px Inter,sans-serif`
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
       ctx.fillText(`${mult}x`, bx + bw / 2, by + bh / 2)
     }
 
-    // ── Ball ──
-    if (ball.x > -500) {
-      // Soft trail
+    // ── Ball ──────────────────────────────────────────────────────
+    if (bp.x > -500) {
+      // Motion blur trail
       ctx.save()
-      ctx.beginPath()
-      ctx.arc(ball.x, ball.y - 5, BALL_RADIUS * 0.65, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(255,140,0,0.15)'
-      ctx.filter = 'blur(5px)'
-      ctx.fill()
-      ctx.filter = 'none'
+      const bv = ballVel.current
+      const speed = Math.sqrt(bv.x * bv.x + bv.y * bv.y)
+      if (speed > 2) {
+        const tx = bp.x - bv.x * 2.5
+        const ty = bp.y - bv.y * 2.5
+        const trailGr = ctx.createLinearGradient(tx, ty, bp.x, bp.y)
+        trailGr.addColorStop(0, 'rgba(255,140,0,0)')
+        trailGr.addColorStop(1, `rgba(255,140,0,${Math.min(0.45, speed * 0.04)})`)
+        ctx.beginPath()
+        ctx.moveTo(tx, ty)
+        ctx.lineTo(bp.x, bp.y)
+        ctx.strokeStyle = trailGr
+        ctx.lineWidth   = BALL_R * 1.6
+        ctx.lineCap     = 'round'
+        ctx.stroke()
+      }
       ctx.restore()
 
       // Ball sphere
       ctx.save()
       ctx.beginPath()
-      ctx.arc(ball.x, ball.y, BALL_RADIUS, 0, Math.PI * 2)
-      const bg2 = ctx.createRadialGradient(
-        ball.x - 2.5, ball.y - 2.8, 0.8,
-        ball.x, ball.y, BALL_RADIUS,
+      ctx.arc(bp.x, bp.y, BALL_R, 0, Math.PI * 2)
+      const sg = ctx.createRadialGradient(
+        bp.x - 2.8, bp.y - 3, 0.8,
+        bp.x, bp.y, BALL_R,
       )
-      bg2.addColorStop(0, '#FFF5AA')
-      bg2.addColorStop(0.45, '#FF9900')
-      bg2.addColorStop(1, '#AA3300')
-      ctx.fillStyle = bg2
+      sg.addColorStop(0,    '#FFF9C4')
+      sg.addColorStop(0.4,  '#FFAA00')
+      sg.addColorStop(0.8,  '#EE6600')
+      sg.addColorStop(1,    '#882200')
+      ctx.fillStyle = sg
       ctx.shadowColor = '#FF9900'; ctx.shadowBlur = 18
+      ctx.fill()
+      // Specular highlight
+      ctx.beginPath()
+      ctx.arc(bp.x - 2.5, bp.y - 2.5, BALL_R * 0.28, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(255,255,255,0.55)'
+      ctx.shadowBlur = 0
       ctx.fill()
       ctx.restore()
     }
-  }, [layout, pegXY, bucketX, risk, rows])
+  }, [layout, bucketX, risk, rows])
 
-  /* ── animation loop ───────────────────────────────────────────── */
+  /* ── physics tick ─────────────────────────────────────────────── */
+  const physicsTick = useCallback((now: number) => {
+    const l = layout()
+    if (!l) return
+
+    const dt = 1 / SUBSTEPS
+    const bp = ballPos.current
+    const bv = ballVel.current
+
+    for (let s = 0; s < SUBSTEPS; s++) {
+      bv.y += GRAVITY * dt
+      bv.x *= (1 - FRICTION_AIR)
+      bp.x += bv.x
+      bp.y += bv.y
+
+      // Wall collisions
+      const minX = 16 + BALL_R, maxX = l.W - 16 - BALL_R
+      if (bp.x < minX) { bp.x = minX; bv.x = Math.abs(bv.x) * RESTITUTION }
+      if (bp.x > maxX) { bp.x = maxX; bv.x = -Math.abs(bv.x) * RESTITUTION }
+
+      // Peg collisions
+      for (const peg of pegsRef.current) {
+        const dx   = bp.x - peg.x
+        const dy   = bp.y - peg.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        const min  = BALL_R + PEG_R + 0.5
+        if (dist < min && dist > 0.01) {
+          const nx = dx / dist, ny = dy / dist
+          // Push out
+          bp.x = peg.x + nx * min
+          bp.y = peg.y + ny * min
+          // Reflect velocity along normal
+          const dot = bv.x * nx + bv.y * ny
+          if (dot < 0) {
+            bv.x -= (1 + RESTITUTION) * dot * nx
+            bv.y -= (1 + RESTITUTION) * dot * ny
+          }
+          // Record hit for visual bounce
+          const key = `${peg.row},${peg.col}`
+          if (!pegHits.current.has(key) || now - (pegHits.current.get(key)!) > BOUNCE_DUR * 0.8)
+            pegHits.current.set(key, now)
+        }
+      }
+    }
+
+    // Detect landing (below bucket row)
+    if (bp.y > l.H - 68) {
+      const bucket = Math.round((bp.x - l.cx) / l.ps + rows / 2)
+      const clamped = Math.max(0, Math.min(rows, bucket))
+      activeRef.current = clamped
+      runningRef.current = false
+      draw(now)
+      onAnimationEnd(clamped)
+      return
+    }
+
+    draw(now)
+    rafRef.current = requestAnimationFrame(physicsTick)
+  }, [layout, draw, onAnimationEnd, rows])
+
+  /* ── start / stop ─────────────────────────────────────────────── */
   useEffect(() => {
     if (!ballPath) {
-      ballRef.current = { x: -999, y: -999 }
-      activeBucketRef.current = activeBucket
-      pegHitsRef.current.clear()
+      // Static board: no ball, maybe highlight bucket
+      ballPos.current = { x: -999, y: -999 }
+      activeRef.current = activeBucket
+      runningRef.current = false
+      pegsRef.current = buildPegs()
+      cancelAnimationFrame(rafRef.current)
       draw(performance.now())
       return
     }
 
-    const waypoints = buildWaypoints(ballPath)
-    isAnimatingRef.current = true
-    activeBucketRef.current = null
-    pegHitsRef.current.clear()
-    ballRef.current = { x: waypoints[0].x, y: waypoints[0].y }
-
-    const segs = waypoints.length - 1
-    const durations = Array.from({ length: segs }, (_, i) =>
-      SEG_DURATIONS[Math.min(i, SEG_DURATIONS.length - 1)],
-    )
-    const totalDur = durations.reduce((a, b) => a + b, 0)
-    const cumulative = durations.reduce<number[]>((acc, d, i) => {
-      acc.push((acc[i - 1] ?? 0) + d); return acc
-    }, [])
-
-    // Which segment index triggered a peg hit (avoid double-recording)
-    let lastHitSeg = -1
-
-    let startTs = 0
-    const tick = (ts: number) => {
-      if (!startTs) startTs = ts
-      const elapsed = ts - startTs
-
-      if (elapsed >= totalDur) {
-        const last = waypoints[waypoints.length - 1]
-        ballRef.current = { x: last.x, y: last.y }
-        activeBucketRef.current = ballPath.filter(Boolean).length
-        isAnimatingRef.current = false
-        draw(ts)
-        onAnimationEnd()
-        return
-      }
-
-      // Current segment
-      const segIdx = cumulative.findIndex((c) => elapsed < c)
-      const segStart = segIdx === 0 ? 0 : (cumulative[segIdx - 1] ?? 0)
-      const rawT = (elapsed - segStart) / durations[segIdx]
-
-      // Record peg hit once per segment (at very start of segment)
-      if (segIdx > 0 && segIdx <= rows && segIdx !== lastHitSeg && rawT < 0.15) {
-        // Find which peg this waypoint corresponds to (row = segIdx-1)
-        const hitRow = segIdx - 1
-        let hitCol = 0
-        for (let i = 0; i < hitRow; i++) if (ballPath[i]) hitCol++
-        pegHitsRef.current.set(`${hitRow},${hitCol}`, ts)
-        lastHitSeg = segIdx
-      }
-
-      // Ease-in (gravity)
-      const t = rawT < 0.5 ? 2 * rawT * rawT : 1 - Math.pow(-2 * rawT + 2, 2) / 2
-      const from = waypoints[segIdx], to = waypoints[segIdx + 1], cp = from.cp
-      const mt = 1 - t
-      ballRef.current = {
-        x: mt * mt * from.x + 2 * mt * t * cp.x + t * t * to.x,
-        y: mt * mt * from.y + 2 * mt * t * cp.y + t * t * to.y,
-      }
-
-      draw(ts)
-      rafRef.current = requestAnimationFrame(tick)
-    }
-
+    // New drop
     cancelAnimationFrame(rafRef.current)
-    rafRef.current = requestAnimationFrame(tick)
+    launchBall()
+    rafRef.current = requestAnimationFrame(physicsTick)
     return () => cancelAnimationFrame(rafRef.current)
-  }, [ballPath, activeBucket, buildWaypoints, draw, onAnimationEnd, rows])
+  }, [ballPath, activeBucket, buildPegs, launchBall, physicsTick, draw])
 
-  // Static redraw when settings change
+  // Static redraw when params change
   useEffect(() => {
-    if (!isAnimatingRef.current) {
-      activeBucketRef.current = activeBucket
+    if (!runningRef.current) {
+      pegsRef.current = buildPegs()
+      activeRef.current = activeBucket
       draw(performance.now())
     }
-  }, [risk, rows, activeBucket, draw])
+  }, [risk, rows, activeBucket, buildPegs, draw])
 
   return (
     <canvas
